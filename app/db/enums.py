@@ -15,3 +15,5 @@ class AnimeType(enum.StrEnum):
     ONA = "ona"
     MOVIE = "movie"
     SPECIAL = "special"
+    MUSIC = "music"
+    UNKNOWN = "unknown"
