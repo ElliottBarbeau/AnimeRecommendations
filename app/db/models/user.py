@@ -1,4 +1,4 @@
-from app.db import Base
+from app.db.base import Base
 from sqlalchemy import Integer, String, Enum, UniqueConstraint
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
@@ -9,7 +9,7 @@ class User(Base):
     __tablename__ = "users"
 
     __table_args__ = (
-        UniqueConstraint("provider", "provider_username", name="uq_provider_username")
+        UniqueConstraint("provider", "provider_username", name="uq_provider_username"),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)

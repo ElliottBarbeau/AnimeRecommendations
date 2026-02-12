@@ -1,0 +1,21 @@
+services:
+  postgres:
+    image: postgres:16
+    container_name: anime-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: anime
+      POSTGRES_PASSWORD: animepass
+      POSTGRES_DB: anime_recs
+    ports:
+      - "5432:5432"
+    volumes:
+      - anime_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U anime -d anime_recs"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  anime_pgdata:
