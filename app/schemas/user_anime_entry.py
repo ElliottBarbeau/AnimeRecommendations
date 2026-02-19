@@ -9,6 +9,7 @@ class UserAnimeEntryRead(BaseModel):
     provider: Provider
     provider_username: str
     anime_id: int
+    anime_title: str
     status: EntryStatus | None = None
     score: int | None = None
     progress: int | None = None

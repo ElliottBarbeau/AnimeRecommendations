@@ -5,17 +5,19 @@ from sqlalchemy.exc import IntegrityError
 from app.api.deps import get_db
 from app.db.models.user_anime_entry import UserAnimeEntry
 from app.db.models.user import User
+from app.db.models.anime import Anime
 from app.schemas.user_anime_entry import UserAnimeEntryCreate, UserAnimeEntryRead
 
 router = APIRouter(prefix="/entry", tags=["Entry"])
 
-def _entry_read_with_user(entry: UserAnimeEntry, user: User) -> UserAnimeEntryRead:
+def _entry_read_with_user(entry: UserAnimeEntry, user: User, anime: Anime) -> UserAnimeEntryRead:
     return UserAnimeEntryRead(
         id=entry.id,
         user_id=entry.user_id,
         provider=user.provider,
         provider_username=user.provider_username,
         anime_id=entry.anime_id,
+        anime_title=anime.title,
         status=entry.status,
         score=entry.score,
         progress=entry.progress,
@@ -24,16 +26,17 @@ def _entry_read_with_user(entry: UserAnimeEntry, user: User) -> UserAnimeEntryRe
 @router.get("/by-id/{id}", response_model=UserAnimeEntryRead)
 def get_entry(id: int, db: Session=Depends(get_db)):
     row = db.execute(
-        select(UserAnimeEntry, User)
+        select(UserAnimeEntry, User, Anime)
         .join(User, User.id == UserAnimeEntry.user_id)
+        .join(Anime, Anime.id == UserAnimeEntry.anime_id)
         .where(UserAnimeEntry.id == id)
     ).one_or_none()
 
     if row is None:
         raise HTTPException(status_code=404, detail="Entry not found")
 
-    entry, user = row
-    return _entry_read_with_user(entry, user)
+    entry, user, anime = row
+    return _entry_read_with_user(entry, user, anime)
 
 @router.post("/", response_model=UserAnimeEntryRead)
 def create_entry(payload: UserAnimeEntryCreate, db: Session=Depends(get_db)):
@@ -56,16 +59,16 @@ def create_entry(payload: UserAnimeEntryCreate, db: Session=Depends(get_db)):
         raise HTTPException(status_code=409, detail="User anime entry already exists")
 
     row = db.execute(
-        select(UserAnimeEntry, User)
+        select(UserAnimeEntry, User, Anime)
         .join(User, User.id == UserAnimeEntry.user_id)
+        .join(Anime, Anime.id == UserAnimeEntry.anime_id)
         .where(UserAnimeEntry.id == entry.id)
     ).one_or_none()
 
     if row is None:
         raise HTTPException(status_code=404, detail="Entry not found after create")
 
-    created_entry, user = row
-    return _entry_read_with_user(created_entry, user)
+    created_entry, user, anime = row
+    return _entry_read_with_user(created_entry, user, anime)
     
-
 
