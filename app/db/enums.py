@@ -10,15 +10,15 @@ class AnimeStatus(enum.StrEnum):
     ANNOUNCED = "announced"
 
 class EntryStatus(enum.StrEnum):
-    WATCHING = "watching"
     WATCHED = "watched"
+    WATCHING = "watching"
     ON_HOLD = "on_hold"
     DROPPED = "dropped"
     PLAN_TO_WATCH = "plan_to_watch"
 
 class AnimeType(enum.StrEnum):
-    OVA = "ova"
     TV = "tv"
+    OVA = "ova"
     ONA = "ona"
     MOVIE = "movie"
     SPECIAL = "special"
