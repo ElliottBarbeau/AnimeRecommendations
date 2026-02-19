@@ -3,16 +3,18 @@ from sqlalchemy.orm import Session
 from sqlalchemy import select
 from app.api.deps import get_db
 from app.db.models.user import User
-from app.schemas.user import UserCreate
+from app.schemas.user import UserCreate, UserRead
 
 router = APIRouter(prefix="/users")
 
-@router.get("/by-id/{id}")
+@router.get("/by-id/{id}", response_model=UserRead)
 def get_user(id: int, db: Session=Depends(get_db)):
     user = db.execute(select(User).where(User.id == id)).scalar_one_or_none()
-    return {"id": user.id, "public_id": user.public_id, "provider": user.provider, "provider_username": user.provider_username}
+    if user is None:
+        raise HTTPException(status_code=404, detail="User not found")
+    return user
 
-@router.post("/")
+@router.post("/", response_model=UserRead)
 def create_user(payload: UserCreate, db: Session=Depends(get_db)):
     existing = db.execute(
         select(User).where(User.provider == payload.provider, User.provider_username == payload.provider_username)
