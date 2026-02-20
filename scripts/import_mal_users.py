@@ -1,5 +1,4 @@
 import argparse
-import time
 
 from fastapi import HTTPException
 
@@ -49,7 +48,7 @@ def main() -> None:
 
     usernames = parse_usernames(args)
     if not usernames:
-        raise SystemExit("No usernames provided. Use --usernames and/or --file.")
+        raise SystemExit("No usernames provided. Use --file.")
 
     if args.max_users > 0:
         usernames = usernames[: args.max_users]
@@ -69,25 +68,17 @@ def main() -> None:
             ok += 1
             print(
                 f"[{index}/{total}] OK {username} "
-                f"(items={result.items_seen}, anime+={result.anime_created}, entries+={result.entries_created})"
+                f"(items={result.items_seen}, anime+={result.anime_created}, "
+                f"entries+={result.entries_created}, mean_score={result.mean_score})"
             )
         except HTTPException as exc:
             failed += 1
             print(f"[{index}/{total}] FAIL {username} (status={exc.status_code} detail={exc.detail})")
-            if args.stop_on_error:
-                db.close()
-                break
         except Exception as exc:
             failed += 1
             print(f"[{index}/{total}] FAIL {username} (error={exc})")
-            if args.stop_on_error:
-                db.close()
-                break
         finally:
             db.close()
-
-        if index < total and args.sleep_seconds > 0:
-            time.sleep(args.sleep_seconds)
 
     print(f"Done. total={total} ok={ok} failed={failed}")
 

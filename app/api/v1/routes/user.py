@@ -191,7 +191,12 @@ def import_mal_list(payload: UserImportMALRequest, db: Session=Depends(get_db)):
     users_created = 0
     users_updated = 0
     if user is None:
-        user = User(provider=Provider.MAL, provider_username=username, provider_user_id=provider_user_id)
+        user = User(
+            provider=Provider.MAL,
+            provider_username=username,
+            provider_user_id=provider_user_id,
+            mean_score=0,
+        )
         db.add(user)
         db.flush()
         users_created = 1
@@ -205,6 +210,8 @@ def import_mal_list(payload: UserImportMALRequest, db: Session=Depends(get_db)):
     anime_updated = 0
     entries_created = 0
     entries_updated = 0
+    score_total = Decimal("0")
+    scored_entries = 0
 
     offset = 0
     while True:
@@ -280,6 +287,9 @@ def import_mal_list(payload: UserImportMALRequest, db: Session=Depends(get_db)):
                 "score": Decimal(str(item.get("score", 0))) if isinstance(item.get("score"), (int, float)) else None,
                 "progress": item.get("num_watched_episodes") if isinstance(item.get("num_watched_episodes"), int) else None,
             }
+            if entry_updates["score"] is not None and entry_updates["score"] > 0:
+                score_total += entry_updates["score"]
+                scored_entries += 1
 
             if entry is None:
                 entry = UserAnimeEntry(user_id=user.id, anime_id=anime.id, **entry_updates)
@@ -295,6 +305,11 @@ def import_mal_list(payload: UserImportMALRequest, db: Session=Depends(get_db)):
                     entries_updated += 1
 
         offset += _MAL_LOAD_PAGE_SIZE
+
+    calculated_mean_score = int(round(float(score_total / scored_entries))) if scored_entries > 0 else 0
+    if user.mean_score != calculated_mean_score:
+        user.mean_score = calculated_mean_score
+        users_updated += 1
 
     try:
         db.commit()
@@ -314,4 +329,5 @@ def import_mal_list(payload: UserImportMALRequest, db: Session=Depends(get_db)):
         anime_updated=anime_updated,
         entries_created=entries_created,
         entries_updated=entries_updated,
+        mean_score=user.mean_score,
     )

@@ -16,4 +16,5 @@ class User(Base):
     public_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), default=uuid.uuid4, unique=True, nullable=False)
     provider: Mapped[Provider] = mapped_column(Enum(Provider, name="provider_enum"), nullable=False)
     provider_username: Mapped[str] = mapped_column(String, nullable=False)
-    provider_user_id: Mapped[int | None] = mapped_column(Integer, nullable=True) # need to resolve via jikan or something later
+    provider_user_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    mean_score: Mapped[int] = mapped_column(Integer, nullable=False)
