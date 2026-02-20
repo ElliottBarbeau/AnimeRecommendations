@@ -12,6 +12,7 @@ class UserAnimeEntryRead(BaseModel):
     anime_title: str
     status: EntryStatus | None = None
     score: int | None = None
+    z_score: float | None = None
     progress: int | None = None
 
 class UserAnimeEntryCreate(BaseModel):

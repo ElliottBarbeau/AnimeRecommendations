@@ -1,7 +1,7 @@
 from app.db.base import Base
 from sqlalchemy import Integer, String, Enum, UniqueConstraint
 from sqlalchemy.dialects.postgresql import UUID
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.db.enums import Provider
 import uuid
 
@@ -17,4 +17,22 @@ class User(Base):
     provider: Mapped[Provider] = mapped_column(Enum(Provider, name="provider_enum"), nullable=False)
     provider_username: Mapped[str] = mapped_column(String, nullable=False)
     provider_user_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    mean_score: Mapped[int] = mapped_column(Integer, nullable=False)
+    stats: Mapped["UserStats"] = relationship(back_populates="user", uselist=False)
+
+    @property
+    def mean_score(self) -> float:
+        if self.stats is None:
+            return 0.0
+        return self.stats.mean_score
+
+    @property
+    def stddev_score(self) -> float:
+        if self.stats is None:
+            return 0.0
+        return self.stats.stddev_score
+
+    @property
+    def rating_count(self) -> int:
+        if self.stats is None:
+            return 0
+        return self.stats.rating_count

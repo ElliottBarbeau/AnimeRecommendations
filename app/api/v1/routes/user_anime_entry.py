@@ -20,6 +20,7 @@ def _entry_read_with_user(entry: UserAnimeEntry, user: User, anime: Anime) -> Us
         anime_title=anime.title,
         status=entry.status,
         score=entry.score,
+        z_score=entry.z_score,
         progress=entry.progress,
     )
 
@@ -71,4 +72,3 @@ def create_entry(payload: UserAnimeEntryCreate, db: Session=Depends(get_db)):
     created_entry, user, anime = row
     return _entry_read_with_user(created_entry, user, anime)
     
-

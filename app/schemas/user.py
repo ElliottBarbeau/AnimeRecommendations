@@ -6,7 +6,6 @@ class UserCreate(BaseModel):
     provider: Provider
     provider_username: str
     provider_user_id: int | None = None
-    mean_score: int
 
 class UserRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
@@ -16,7 +15,9 @@ class UserRead(BaseModel):
     provider: Provider
     provider_username: str
     provider_user_id: int | None = None
-    mean_score: int
+    mean_score: float
+    stddev_score: float
+    rating_count: int
 
 class UserImportMALRequest(BaseModel):
     mal_list_url: str
@@ -33,4 +34,6 @@ class UserImportMALResponse(BaseModel):
     anime_updated: int
     entries_created: int
     entries_updated: int
-    mean_score: int
+    mean_score: float
+    stddev_score: float
+    rating_count: int

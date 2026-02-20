@@ -69,7 +69,8 @@ def main() -> None:
             print(
                 f"[{index}/{total}] OK {username} "
                 f"(items={result.items_seen}, anime+={result.anime_created}, "
-                f"entries+={result.entries_created}, mean_score={result.mean_score})"
+                f"entries+={result.entries_created}, mean={result.mean_score:.2f}, "
+                f"stddev={result.stddev_score:.2f}, count={result.rating_count})"
             )
         except HTTPException as exc:
             failed += 1

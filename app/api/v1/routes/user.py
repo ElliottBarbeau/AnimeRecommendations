@@ -3,6 +3,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy import select
 from decimal import Decimal
+from statistics import pstdev
 from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 from urllib.error import HTTPError, URLError
@@ -10,6 +11,7 @@ import json
 import re
 from app.api.deps import get_db
 from app.db.models.user import User
+from app.db.models.user_stats import UserStats
 from app.db.models.anime import Anime
 from app.db.models.user_anime_entry import UserAnimeEntry
 from app.db.enums import AnimeStatus, AnimeType, EntryStatus, Provider
@@ -169,6 +171,8 @@ def create_user(payload: UserCreate, db: Session=Depends(get_db)):
     
     user = User(**payload.model_dump())
     db.add(user)
+    db.flush()
+    db.add(UserStats(user_id=user.id, mean_score=0.0, stddev_score=0.0, rating_count=0))
 
     try:
         db.commit()
@@ -195,10 +199,10 @@ def import_mal_list(payload: UserImportMALRequest, db: Session=Depends(get_db)):
             provider=Provider.MAL,
             provider_username=username,
             provider_user_id=provider_user_id,
-            mean_score=0,
         )
         db.add(user)
         db.flush()
+        db.add(UserStats(user_id=user.id, mean_score=0.0, stddev_score=0.0, rating_count=0))
         users_created = 1
     elif user.provider_user_id != provider_user_id:
         user.provider_user_id = provider_user_id
@@ -210,8 +214,6 @@ def import_mal_list(payload: UserImportMALRequest, db: Session=Depends(get_db)):
     anime_updated = 0
     entries_created = 0
     entries_updated = 0
-    score_total = Decimal("0")
-    scored_entries = 0
 
     offset = 0
     while True:
@@ -287,9 +289,6 @@ def import_mal_list(payload: UserImportMALRequest, db: Session=Depends(get_db)):
                 "score": Decimal(str(item.get("score", 0))) if isinstance(item.get("score"), (int, float)) else None,
                 "progress": item.get("num_watched_episodes") if isinstance(item.get("num_watched_episodes"), int) else None,
             }
-            if entry_updates["score"] is not None and entry_updates["score"] > 0:
-                score_total += entry_updates["score"]
-                scored_entries += 1
 
             if entry is None:
                 entry = UserAnimeEntry(user_id=user.id, anime_id=anime.id, **entry_updates)
@@ -306,10 +305,52 @@ def import_mal_list(payload: UserImportMALRequest, db: Session=Depends(get_db)):
 
         offset += _MAL_LOAD_PAGE_SIZE
 
-    calculated_mean_score = int(round(float(score_total / scored_entries))) if scored_entries > 0 else 0
-    if user.mean_score != calculated_mean_score:
-        user.mean_score = calculated_mean_score
+    user_scores = db.execute(
+        select(UserAnimeEntry.score).where(
+            UserAnimeEntry.user_id == user.id,
+            UserAnimeEntry.score.is_not(None),
+            UserAnimeEntry.score > 0,
+        )
+    ).scalars().all()
+    score_values = [float(score) for score in user_scores]
+
+    if score_values:
+        mean_score = round(sum(score_values) / len(score_values), 4)
+        stddev_score = round(pstdev(score_values), 4) if len(score_values) > 1 else 0.0
+        rating_count = len(score_values)
+    else:
+        mean_score = 0.0
+        stddev_score = 0.0
+        rating_count = 0
+
+    stats = db.execute(select(UserStats).where(UserStats.user_id == user.id)).scalar_one_or_none()
+    if stats is None:
+        stats = UserStats(user_id=user.id, mean_score=mean_score, stddev_score=stddev_score, rating_count=rating_count)
+        db.add(stats)
         users_updated += 1
+    elif (
+        stats.mean_score != mean_score
+        or stats.stddev_score != stddev_score
+        or stats.rating_count != rating_count
+    ):
+        stats.mean_score = mean_score
+        stats.stddev_score = stddev_score
+        stats.rating_count = rating_count
+        users_updated += 1
+
+    user_entries = db.execute(
+        select(UserAnimeEntry).where(UserAnimeEntry.user_id == user.id)
+    ).scalars().all()
+    for user_entry in user_entries:
+        if user_entry.score is None or user_entry.score <= 0:
+            calculated_z_score = None
+        elif stddev_score > 0:
+            calculated_z_score = round((float(user_entry.score) - mean_score) / stddev_score, 4)
+        else:
+            calculated_z_score = 0.0
+
+        if user_entry.z_score != calculated_z_score:
+            user_entry.z_score = calculated_z_score
 
     try:
         db.commit()
@@ -330,4 +371,6 @@ def import_mal_list(payload: UserImportMALRequest, db: Session=Depends(get_db)):
         entries_created=entries_created,
         entries_updated=entries_updated,
         mean_score=user.mean_score,
+        stddev_score=user.stddev_score,
+        rating_count=user.rating_count,
     )
