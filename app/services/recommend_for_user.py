@@ -1,5 +1,5 @@
 from app.db.session import SessionLocal
-from app.db.repositories.user_anime_entries import get_entries_above_score
+from app.db.repositories.user_anime_entries import get_entries_above_score, get_neighbours
 
 def recommend_for_user(user_id):
     # target user's score >= 8.0 shows
@@ -21,11 +21,14 @@ def recommend_for_user(user_id):
 
     db = SessionLocal()
     try:
-        candidate_shows = get_entries_above_score(db, user_id, 8)
+        candidate_shows = get_entries_above_score(db, user_id, 9)
+        neighbours = get_neighbours(db, candidate_shows, user_id, 9)
     finally:
         db.close()
+        
 
     print(candidate_shows)
+    print(neighbours)
 
 if __name__ == "__main__":
     recommend_for_user(1)
