@@ -1,20 +1,21 @@
 from collections import Counter
 from app.db.session import SessionLocal
 from app.db.repositories.user_anime_entries import (
-    get_entries_above_score, 
+    get_entries_above_z_score, 
     get_neighbours, 
     get_candidate_shows
 )
 from app.db.repositories.anime import get_anime_title_by_id
 
-def recommend_for_user(user_id):
-    # target user's score >= 8.0 shows
-    # neighbour users who also gave those shows >= 8.0
-    # candidate shows are the ones that the neighbour scored >= 8.0
+def recommend_for_user(user_id, z_score):
+    # changed score instances to z-score, which is normalized score to get better data
+    # target user's z_score >= 1.0 shows
+    # neighbour users who also gave those shows z_score >= 1.0
+    # candidate shows are the ones that neighbours scored z_score >= 1.0
     # exclude shows target user already has in their list
     # simple scoring for now, just +1
 
-    # +1 every time a neighbour rated it >= 8.0
+    # +1 every time a neighbour has z_score >= 1.0
     # sort by descending score
 
 
@@ -27,18 +28,19 @@ def recommend_for_user(user_id):
 
     db = SessionLocal()
     try:
-        user_shows = get_entries_above_score(db, user_id, 9)
-        neighbours = get_neighbours(db, user_shows, user_id, 9)
-        candidate_shows = get_candidate_shows(db, neighbours, user_id, 9)
+        user_shows = get_entries_above_z_score(db, user_id, z_score)
+        neighbours = get_neighbours(db, user_shows, user_id, z_score)
+        candidate_shows = get_candidate_shows(db, neighbours, user_id, z_score)
+
+        print(user_shows)
+        print(neighbours)
+
+        top_20 = Counter(candidate_shows).most_common(20)
+        for id, score in top_20:
+            print(f"{get_anime_title_by_id(db, id)}: {score}")
     finally:
         db.close()
-        
-    print(user_shows)
-    print(neighbours)
-
-    top_20 = Counter(candidate_shows).most_common(20)
-    for id, score in top_20:
-        print(f"{get_anime_title_by_id(db, id)}: {score}")
+    
 
 if __name__ == "__main__":
-    recommend_for_user(1)
+    recommend_for_user(2, 1.0)
