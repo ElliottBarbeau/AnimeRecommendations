@@ -1,4 +1,4 @@
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 from app.db.enums import EntryStatus, Provider
 
 class UserAnimeEntryRead(BaseModel):
@@ -14,6 +14,7 @@ class UserAnimeEntryRead(BaseModel):
     score: int | None = None
     z_score: float | None = None
     progress: int | None = None
+    tags: list[str] = Field(default_factory=list)
 
 class UserAnimeEntryCreate(BaseModel):
     model_config = ConfigDict(from_attributes=True)
@@ -23,3 +24,4 @@ class UserAnimeEntryCreate(BaseModel):
     status: EntryStatus | None = None
     score: int | None = None
     progress: int | None = None
+    tags: list[str] = Field(default_factory=list)

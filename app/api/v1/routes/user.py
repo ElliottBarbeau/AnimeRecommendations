@@ -1,7 +1,8 @@
+from collections import Counter
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from decimal import Decimal
 from statistics import pstdev
 from urllib.parse import urlparse
@@ -9,11 +10,13 @@ from urllib.request import Request, urlopen
 from urllib.error import HTTPError, URLError
 import json
 import re
+import time
 from app.api.deps import get_db
 from app.db.models.user import User
 from app.db.models.user_stats import UserStats
 from app.db.models.anime import Anime
 from app.db.models.user_anime_entry import UserAnimeEntry
+from app.db.models.user_tag_stat import UserTagStat
 from app.db.enums import AnimeStatus, AnimeType, EntryStatus, Provider
 from app.schemas.user import UserCreate, UserRead, UserImportMALRequest, UserImportMALResponse
 
@@ -21,6 +24,33 @@ router = APIRouter(prefix="/users", tags=["User"])
 
 _MAL_USERNAME_RE = re.compile(r"^/animelist/([^/]+?)/?$", re.IGNORECASE)
 _MAL_LOAD_PAGE_SIZE = 300
+_JIKAN_MIN_INTERVAL_SECONDS = 0.7
+_JIKAN_RETRY_BASE_SECONDS = 1.5
+_JIKAN_MAX_RETRIES = 5
+_last_jikan_request_at = 0.0
+
+def _is_jikan_url(url: str) -> bool:
+    return urlparse(url).netloc.lower() == "api.jikan.moe"
+
+def _throttle_jikan_requests() -> None:
+    global _last_jikan_request_at
+    elapsed = time.monotonic() - _last_jikan_request_at
+    wait_seconds = _JIKAN_MIN_INTERVAL_SECONDS - elapsed
+    if wait_seconds > 0:
+        time.sleep(wait_seconds)
+
+def _mark_jikan_request_complete() -> None:
+    global _last_jikan_request_at
+    _last_jikan_request_at = time.monotonic()
+
+def _retry_after_seconds(exc: HTTPError) -> float:
+    header_value = exc.headers.get("Retry-After") if exc.headers else None
+    if not header_value:
+        return 0.0
+    try:
+        return max(float(header_value), 0.0)
+    except ValueError:
+        return 0.0
 
 def _parse_mal_username(value: str) -> str:
     parsed = urlparse(value)
@@ -37,37 +67,60 @@ def _parse_mal_username(value: str) -> str:
     return value.strip()
 
 def _fetch_json(url: str) -> object:
-    req = Request(url, headers={"User-Agent": "AnimeRecommendations/1.0"})
-    try:
-        with urlopen(req, timeout=20) as response:
-            return json.loads(response.read().decode("utf-8"))
-    except HTTPError as exc:
-        body = ""
+    is_jikan = _is_jikan_url(url)
+    attempts = 0
+
+    while True:
+        req = Request(url, headers={"User-Agent": "AnimeRecommendations/1.0"})
+        if is_jikan:
+            _throttle_jikan_requests()
+
         try:
-            body = exc.read().decode("utf-8")
-        except Exception:
+            with urlopen(req, timeout=20) as response:
+                if is_jikan:
+                    _mark_jikan_request_complete()
+                return json.loads(response.read().decode("utf-8"))
+        except HTTPError as exc:
+            if is_jikan:
+                _mark_jikan_request_complete()
+
             body = ""
-
-        message = None
-        if body:
             try:
-                error_payload = json.loads(body)
-                if isinstance(error_payload, dict):
-                    maybe_message = error_payload.get("message")
-                    if isinstance(maybe_message, str) and maybe_message.strip():
-                        message = maybe_message.strip()
-            except json.JSONDecodeError:
-                message = None
+                body = exc.read().decode("utf-8")
+            except Exception:
+                body = ""
 
-        if exc.code == 404:
-            raise HTTPException(status_code=404, detail="MAL user not found")
-        if exc.code == 429:
-            raise HTTPException(status_code=429, detail=message or "Jikan rate limit exceeded. Try again shortly.")
-        raise HTTPException(status_code=502, detail=message or f"Upstream request failed: HTTP {exc.code}")
-    except URLError:
-        raise HTTPException(status_code=502, detail="Could not reach MAL/Jikan upstream")
-    except json.JSONDecodeError:
-        raise HTTPException(status_code=502, detail="Invalid JSON from MAL/Jikan upstream")
+            message = None
+            if body:
+                try:
+                    error_payload = json.loads(body)
+                    if isinstance(error_payload, dict):
+                        maybe_message = error_payload.get("message")
+                        if isinstance(maybe_message, str) and maybe_message.strip():
+                            message = maybe_message.strip()
+                except json.JSONDecodeError:
+                    message = None
+
+            if is_jikan and exc.code == 429 and attempts < _JIKAN_MAX_RETRIES:
+                retry_after = _retry_after_seconds(exc)
+                backoff = max(retry_after, _JIKAN_RETRY_BASE_SECONDS * (2 ** attempts))
+                time.sleep(backoff)
+                attempts += 1
+                continue
+
+            if exc.code == 404:
+                raise HTTPException(status_code=404, detail="MAL user not found")
+            if exc.code == 429:
+                raise HTTPException(status_code=429, detail=message or "Jikan rate limit exceeded. Try again shortly.")
+            raise HTTPException(status_code=502, detail=message or f"Upstream request failed: HTTP {exc.code}")
+        except URLError:
+            if is_jikan and attempts < _JIKAN_MAX_RETRIES:
+                time.sleep(_JIKAN_RETRY_BASE_SECONDS * (2 ** attempts))
+                attempts += 1
+                continue
+            raise HTTPException(status_code=502, detail="Could not reach MAL/Jikan upstream")
+        except json.JSONDecodeError:
+            raise HTTPException(status_code=502, detail="Invalid JSON from MAL/Jikan upstream")
 
 def _extract_mal_id_from_profile(profile_data: object) -> int | None:
     if not isinstance(profile_data, dict):
@@ -153,6 +206,67 @@ def _pick_anime_title(item: dict) -> str | None:
 
     return None
 
+def _normalize_tags(values: list[str]) -> list[str]:
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        cleaned = value.strip()
+        if not cleaned:
+            continue
+        key = cleaned.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        normalized.append(cleaned)
+    return normalized
+
+def _extract_tag_names(raw: object) -> list[str]:
+    if not isinstance(raw, list):
+        return []
+
+    collected: list[str] = []
+    for item in raw:
+        if isinstance(item, dict):
+            maybe_name = item.get("name")
+            if isinstance(maybe_name, str):
+                collected.append(maybe_name)
+        elif isinstance(item, str):
+            collected.append(item)
+
+    return _normalize_tags(collected)
+
+def _extract_tags_from_mal_item(item: dict) -> list[str]:
+    tag_keys = (
+        "genres",
+        "anime_genres",
+        "themes",
+        "anime_themes",
+        "demographics",
+        "anime_demographics",
+        "anime_genre",
+    )
+    collected: list[str] = []
+    for key in tag_keys:
+        collected.extend(_extract_tag_names(item.get(key)))
+
+    return _normalize_tags(collected)
+
+def _fetch_jikan_anime_tags(provider_anime_id: int) -> list[str]:
+    details = _fetch_json(f"https://api.jikan.moe/v4/anime/{provider_anime_id}")
+    if not isinstance(details, dict):
+        return []
+
+    data = details.get("data")
+    if not isinstance(data, dict):
+        return []
+
+    tags: list[str] = []
+    tags.extend(_extract_tag_names(data.get("genres")))
+    tags.extend(_extract_tag_names(data.get("themes")))
+    tags.extend(_extract_tag_names(data.get("demographics")))
+    tags.extend(_extract_tag_names(data.get("explicit_genres")))
+    return _normalize_tags(tags)
+
 @router.get("/by-id/{id}", response_model=UserRead)
 def get_user(id: int, db: Session=Depends(get_db)):
     user = db.execute(select(User).where(User.id == id)).scalar_one_or_none()
@@ -214,6 +328,7 @@ def import_mal_list(payload: UserImportMALRequest, db: Session=Depends(get_db)):
     anime_updated = 0
     entries_created = 0
     entries_updated = 0
+    anime_tags_cache: dict[int, list[str]] = {}
 
     offset = 0
     while True:
@@ -284,10 +399,24 @@ def import_mal_list(payload: UserImportMALRequest, db: Session=Depends(get_db)):
                 )
             ).scalar_one_or_none()
 
+            entry_tags = _extract_tags_from_mal_item(item)
+            if not entry_tags and entry is not None and entry.tags:
+                entry_tags = entry.tags
+            if not entry_tags:
+                cached_tags = anime_tags_cache.get(provider_anime_id)
+                if cached_tags is None:
+                    try:
+                        cached_tags = _fetch_jikan_anime_tags(provider_anime_id)
+                    except HTTPException:
+                        cached_tags = []
+                    anime_tags_cache[provider_anime_id] = cached_tags
+                entry_tags = cached_tags
+
             entry_updates = {
                 "status": _map_entry_status(item.get("status")),
                 "score": Decimal(str(item.get("score", 0))) if isinstance(item.get("score"), (int, float)) else None,
                 "progress": item.get("num_watched_episodes") if isinstance(item.get("num_watched_episodes"), int) else None,
+                "tags": entry_tags,
             }
 
             if entry is None:
@@ -351,6 +480,15 @@ def import_mal_list(payload: UserImportMALRequest, db: Session=Depends(get_db)):
 
         if user_entry.z_score != calculated_z_score:
             user_entry.z_score = calculated_z_score
+
+    tag_counts: Counter[str] = Counter()
+    for user_entry in user_entries:
+        for tag in _normalize_tags(user_entry.tags or []):
+            tag_counts[tag] += 1
+
+    db.execute(delete(UserTagStat).where(UserTagStat.user_id == user.id))
+    for tag, entry_count in tag_counts.items():
+        db.add(UserTagStat(user_id=user.id, tag=tag, entry_count=entry_count))
 
     try:
         db.commit()
