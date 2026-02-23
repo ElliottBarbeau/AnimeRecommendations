@@ -1,5 +1,5 @@
 from app.db.base import Base
-from sqlalchemy import Integer, String, Enum, Numeric, UniqueConstraint, ARRAY
+from sqlalchemy import Integer, String, Enum, Numeric, UniqueConstraint, ARRAY, Index
 from sqlalchemy.orm import Mapped, mapped_column
 from app.db.enums import Provider, AnimeStatus, AnimeType
 from decimal import Decimal
@@ -9,6 +9,7 @@ class Anime(Base):
 
     __table_args__ = (
         UniqueConstraint("provider", "provider_anime_id", name="uq_anime_provider_provider_anime_id"),
+        Index("ix_anime_tags_gin", "tags", postgresql_using="gin"),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
