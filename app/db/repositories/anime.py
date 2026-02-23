@@ -13,6 +13,6 @@ def get_anime_tags(db, anime_id):
     tags = db.execute(
         select(Anime.tags)
         .where(Anime.id == anime_id)
-    ).scalars().all()
+    ).scalar_one_or_none() or []
 
     return tags

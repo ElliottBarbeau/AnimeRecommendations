@@ -1,4 +1,5 @@
 from app.db.models.user_anime_entry import UserAnimeEntry
+from app.db.models.user_tag_stat import UserTagStat
 from app.db.models.anime import Anime
 from sqlalchemy import select, func
 
@@ -54,14 +55,12 @@ def get_candidate_shows(db, neighbours: list, user_id: int, z_score_threshold: f
 
 def get_average_rating_by_tag(db, user_id: int, tag: str):
     average_score = db.execute(
-        select(func.avg(UserAnimeEntry.score))
-        .join(Anime, Anime.id == UserAnimeEntry.anime_id)
+        select(UserTagStat.avg_z_score)
         .where(
-            UserAnimeEntry.user_id == user_id,
-            UserAnimeEntry.score.is_not(None),
-            Anime.tags.contains([tag])
+            UserTagStat.user_id == user_id,
+            UserTagStat.tag == tag,
         )
-    ).scalar_one()
+    ).scalar_one_or_none()
 
     return average_score
     

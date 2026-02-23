@@ -1,4 +1,4 @@
-from collections import Counter
+from collections import Counter, defaultdict
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError
@@ -482,18 +482,33 @@ def import_mal_list(payload: UserImportMALRequest, db: Session=Depends(get_db)):
             user_entry.z_score = calculated_z_score
 
     tag_counts: Counter[str] = Counter()
+    tag_z_score_counts: Counter[str] = Counter()
+    tag_z_score_sums: defaultdict[str, float] = defaultdict(float)
     user_entries_with_anime = db.execute(
         select(UserAnimeEntry, Anime)
         .join(Anime, Anime.id == UserAnimeEntry.anime_id)
         .where(UserAnimeEntry.user_id == user.id)
     ).all()
-    for _, anime in user_entries_with_anime:
+    for user_entry, anime in user_entries_with_anime:
         for tag in _normalize_tags(anime.tags or []):
             tag_counts[tag] += 1
+            if user_entry.z_score is not None:
+                tag_z_score_counts[tag] += 1
+                tag_z_score_sums[tag] += float(user_entry.z_score)
 
     db.execute(delete(UserTagStat).where(UserTagStat.user_id == user.id))
     for tag, entry_count in tag_counts.items():
-        db.add(UserTagStat(user_id=user.id, tag=tag, entry_count=entry_count))
+        z_score_count = tag_z_score_counts[tag]
+        avg_z_score = round(tag_z_score_sums[tag] / z_score_count, 4) if z_score_count > 0 else None
+        db.add(
+            UserTagStat(
+                user_id=user.id,
+                tag=tag,
+                entry_count=entry_count,
+                z_score_count=z_score_count,
+                avg_z_score=avg_z_score,
+            )
+        )
 
     try:
         db.commit()

@@ -3,9 +3,29 @@ from app.db.session import SessionLocal
 from app.db.repositories.user_anime_entries import (
     get_entries_above_z_score, 
     get_neighbours, 
-    get_candidate_shows
+    get_candidate_shows,
+    get_average_rating_by_tag
 )
-from app.db.repositories.anime import get_anime_title_by_id
+from app.db.repositories.anime import (
+    get_anime_title_by_id,
+    get_anime_tags
+)
+
+def z_bucket(z: float | None) -> float:
+    match z:
+        case None:
+            return 1
+        case value if value >= 0.5:
+            return 1.25
+        case value if value >= 0.2:
+            return 1.15
+        case value if value > -0.2:
+            return 1
+        case value if value > -0.5:
+            return 0.9
+        case _:
+            return 0.75
+
 
 def recommend_for_user(user_id, z_score):
     # changed score instances to z-score, which is normalized score to get better data
@@ -32,15 +52,29 @@ def recommend_for_user(user_id, z_score):
         neighbours = get_neighbours(db, user_shows, user_id, z_score)
         candidate_shows = get_candidate_shows(db, neighbours, user_id, z_score)
 
-        print(user_shows)
-        print(neighbours)
+        counter = Counter(candidate_shows)
 
-        top_20 = Counter(candidate_shows).most_common(20)
-        for id, score in top_20:
-            print(f"{get_anime_title_by_id(db, id)}: {score}")
+        for id in list(counter.keys()):
+            base_score = counter[id] * 0.55
+            tags = get_anime_tags(db, id)
+            tag_scores = []
+            for tag in tags:
+                avg = get_average_rating_by_tag(db, user_id, tag)
+                if avg is not None:
+                    tag_scores.append(float(avg))
+
+            avg_tag_score = (sum(tag_scores) / len(tag_scores)) if tag_scores else 0.0
+            genre_multiplier = z_bucket(avg_tag_score)
+            base_score *= genre_multiplier
+            counter[id] = base_score
+
+        top_30 = counter.most_common(30)
+        for id, score in top_30:
+            print(f"{get_anime_title_by_id(db, id)}: {round(score, 2)}")
+
     finally:
         db.close()
     
 
 if __name__ == "__main__":
-    recommend_for_user(2, 1.0)
+    recommend_for_user(4, 1.0)
