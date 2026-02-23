@@ -148,4 +148,4 @@ def recommend_for_user(user_id, z_score):
     
 
 if __name__ == "__main__":
-    recommend_for_user(96, 1.0)
+    recommend_for_user(96, 0.35)
