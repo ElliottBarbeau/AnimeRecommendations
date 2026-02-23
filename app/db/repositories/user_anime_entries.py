@@ -63,4 +63,18 @@ def get_average_rating_by_tag(db, user_id: int, tag: str):
     ).scalar_one_or_none()
 
     return average_score
-    
+
+
+def get_user_tag_preferences(db, user_id: int):
+    rows = db.execute(
+        select(UserTagStat.tag, UserTagStat.avg_z_score, UserTagStat.z_score_count)
+        .where(UserTagStat.user_id == user_id)
+    ).all()
+
+    return {
+        tag: {
+            "avg_z_score": (float(avg_z_score) if avg_z_score is not None else None),
+            "z_score_count": z_score_count,
+        }
+        for tag, avg_z_score, z_score_count in rows
+    }

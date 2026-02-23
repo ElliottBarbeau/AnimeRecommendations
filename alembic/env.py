@@ -5,7 +5,7 @@ from sqlalchemy import engine_from_config, pool
 
 from app.config.settings import get_settings
 from app.db.base import Base
-from app.db.models import user, anime, user_anime_entry, user_stats, user_tag_stat  # register tables
+from app.db.models import user, anime, user_anime_entry, user_stats, user_tag_stat, tag_similarity  # register tables
 
 config = context.config
 
