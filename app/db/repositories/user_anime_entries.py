@@ -42,16 +42,28 @@ def get_candidate_shows(db, neighbours: list, user_id: int, z_score_threshold: f
     )
     
     recs = db.execute(
-        select(UserAnimeEntry.anime_id)
+        select(
+            UserAnimeEntry.anime_id,
+            func.sum(UserAnimeEntry.z_score).label("base_score"),
+            func.count(UserAnimeEntry.user_id).label("support_count"),
+        )
         .where(
             UserAnimeEntry.user_id.in_(neighbours),
             UserAnimeEntry.z_score.is_not(None),
             UserAnimeEntry.z_score >= z_score_threshold,
             ~UserAnimeEntry.anime_id.in_(seen_subquery),
         )
-    ).scalars().all()
+        .group_by(UserAnimeEntry.anime_id)
+    ).all()
 
-    return recs
+    return [
+        {
+            "anime_id": anime_id,
+            "base_score": float(base_score) if base_score is not None else 0.0,
+            "support_count": int(support_count),
+        }
+        for anime_id, base_score, support_count in recs
+    ]
 
 def get_average_rating_by_tag(db, user_id: int, tag: str):
     average_score = db.execute(

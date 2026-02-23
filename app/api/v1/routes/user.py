@@ -274,6 +274,13 @@ def get_user(id: int, db: Session=Depends(get_db)):
         raise HTTPException(status_code=404, detail="User not found")
     return user
 
+@router.get("/by-username/{provider_username}", response_model=UserRead)
+def get_user(provider_username: str, db: Session=Depends(get_db)):
+    user = db.execute(select(User).where(User.provider_username == provider_username)).scalar_one_or_none()
+    if user is None:
+        raise HTTPException(status_code=404, detail="User not found")
+    return user
+
 @router.post("/", response_model=UserRead)
 def create_user(payload: UserCreate, db: Session=Depends(get_db)):
     existing = db.execute(

@@ -13,8 +13,10 @@ from app.db.repositories.tag_similarity import get_similarity_scores_for_tag_pai
 
 # discovery tuning
 RELATED_TAG_SIMILARITY_THRESHOLD = 0.20
-RELATED_DISCOVERY_MULTIPLIER = 1.05
+RELATED_DISCOVERY_MAX_BONUS = 0.15
+RELATED_DISCOVERY_STRENGTH = 0.25
 MIN_CONFIDENT_TAG_COUNT = 2
+MIN_CANDIDATE_SUPPORT_COUNT = 10
 
 def z_bucket(z: float | None) -> float:
     match z:
@@ -56,9 +58,15 @@ def recommend_for_user(user_id, z_score):
         user_shows = get_entries_above_z_score(db, user_id, z_score)
         neighbours = get_neighbours(db, user_shows, user_id, z_score)
         candidate_shows = get_candidate_shows(db, neighbours, user_id, z_score)
-        counter = Counter(candidate_shows)
+        score_dict = Counter(
+            {
+                row["anime_id"]: row["base_score"]
+                for row in candidate_shows
+                if row["support_count"] >= MIN_CANDIDATE_SUPPORT_COUNT
+            }
+        )
         user_tag_prefs = get_user_tag_preferences(db, user_id)
-        anime_metadata_by_id = get_anime_metadata_by_ids(db, list(counter.keys()))
+        anime_metadata_by_id = get_anime_metadata_by_ids(db, list(score_dict.keys()))
         global_liked_tags = [
             tag
             for tag, pref in user_tag_prefs.items()
@@ -81,12 +89,12 @@ def recommend_for_user(user_id, z_score):
             min_cooccurrence_count=2,
         )
 
-        for id in list(counter.keys()):
+        for id in list(score_dict.keys()):
             anime_meta = anime_metadata_by_id.get(id)
             if anime_meta is None:
                 continue
 
-            base_score = counter[id] * 0.55
+            base_score = score_dict[id] * 0.55
             tags = anime_meta["tags"]
             known_scores: list[float] = []
             liked_known_tags: list[str] = []
@@ -112,19 +120,25 @@ def recommend_for_user(user_id, z_score):
             genre_multiplier = z_bucket(avg_tag_score)
 
             if liked_known_tags and unknown_tags and not has_strong_disliked_tag:
-                has_related_unknown_tag = any(
-                    similarity_scores_by_pair.get((liked_tag, unknown_tag), 0.0) >= RELATED_TAG_SIMILARITY_THRESHOLD
-                    for liked_tag in liked_known_tags
-                    for unknown_tag in unknown_tags
+                best_similarity = max(
+                    (
+                        similarity_scores_by_pair.get((liked_tag, unknown_tag), 0.0)
+                        for liked_tag in liked_known_tags
+                        for unknown_tag in unknown_tags
+                    ),
+                    default=0.0,
                 )
-                if has_related_unknown_tag:
-                    genre_multiplier *= RELATED_DISCOVERY_MULTIPLIER
+                if best_similarity >= RELATED_TAG_SIMILARITY_THRESHOLD:
+                    discovery_multiplier = 1.0 + min(
+                        RELATED_DISCOVERY_MAX_BONUS,
+                        best_similarity * RELATED_DISCOVERY_STRENGTH,
+                    )
+                    genre_multiplier *= discovery_multiplier
 
             base_score *= genre_multiplier
-            counter[id] = base_score
+            score_dict[id] = base_score
 
-
-        top_30 = counter.most_common(30)
+        top_30 = score_dict.most_common(30)
         for id, score in top_30:
             title = anime_metadata_by_id.get(id, {}).get("title", f"Anime {id}")
             print(f"{title}: {round(score, 2)}")
@@ -134,4 +148,4 @@ def recommend_for_user(user_id, z_score):
     
 
 if __name__ == "__main__":
-    recommend_for_user(1, 1.0)
+    recommend_for_user(96, 1.0)
