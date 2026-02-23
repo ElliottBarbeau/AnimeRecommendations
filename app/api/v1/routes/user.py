@@ -374,6 +374,20 @@ def import_mal_list(payload: UserImportMALRequest, db: Session=Depends(get_db)):
                 "start_year": _extract_year(item.get("anime_start_date_string")),
             }
 
+            anime_tags = _extract_tags_from_mal_item(item)
+            if not anime_tags and anime is not None and anime.tags:
+                anime_tags = anime.tags
+            if not anime_tags:
+                cached_tags = anime_tags_cache.get(provider_anime_id)
+                if cached_tags is None:
+                    try:
+                        cached_tags = _fetch_jikan_anime_tags(provider_anime_id)
+                    except HTTPException:
+                        cached_tags = []
+                    anime_tags_cache[provider_anime_id] = cached_tags
+                anime_tags = cached_tags
+            anime_updates["tags"] = anime_tags
+
             if anime is None:
                 anime = Anime(
                     provider=Provider.MAL,
@@ -399,24 +413,10 @@ def import_mal_list(payload: UserImportMALRequest, db: Session=Depends(get_db)):
                 )
             ).scalar_one_or_none()
 
-            entry_tags = _extract_tags_from_mal_item(item)
-            if not entry_tags and entry is not None and entry.tags:
-                entry_tags = entry.tags
-            if not entry_tags:
-                cached_tags = anime_tags_cache.get(provider_anime_id)
-                if cached_tags is None:
-                    try:
-                        cached_tags = _fetch_jikan_anime_tags(provider_anime_id)
-                    except HTTPException:
-                        cached_tags = []
-                    anime_tags_cache[provider_anime_id] = cached_tags
-                entry_tags = cached_tags
-
             entry_updates = {
                 "status": _map_entry_status(item.get("status")),
                 "score": Decimal(str(item.get("score", 0))) if isinstance(item.get("score"), (int, float)) else None,
                 "progress": item.get("num_watched_episodes") if isinstance(item.get("num_watched_episodes"), int) else None,
-                "tags": entry_tags,
             }
 
             if entry is None:
@@ -482,8 +482,13 @@ def import_mal_list(payload: UserImportMALRequest, db: Session=Depends(get_db)):
             user_entry.z_score = calculated_z_score
 
     tag_counts: Counter[str] = Counter()
-    for user_entry in user_entries:
-        for tag in _normalize_tags(user_entry.tags or []):
+    user_entries_with_anime = db.execute(
+        select(UserAnimeEntry, Anime)
+        .join(Anime, Anime.id == UserAnimeEntry.anime_id)
+        .where(UserAnimeEntry.user_id == user.id)
+    ).all()
+    for _, anime in user_entries_with_anime:
+        for tag in _normalize_tags(anime.tags or []):
             tag_counts[tag] += 1
 
     db.execute(delete(UserTagStat).where(UserTagStat.user_id == user.id))

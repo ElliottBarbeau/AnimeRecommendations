@@ -22,7 +22,7 @@ def _entry_read_with_user(entry: UserAnimeEntry, user: User, anime: Anime) -> Us
         score=entry.score,
         z_score=entry.z_score,
         progress=entry.progress,
-        tags=entry.tags,
+        tags=anime.tags,
     )
 
 @router.get("/by-id/{id}", response_model=UserAnimeEntryRead)

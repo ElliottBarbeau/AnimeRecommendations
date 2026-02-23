@@ -1,5 +1,5 @@
 from app.db.base import Base
-from sqlalchemy import Integer, String, Enum, Numeric, UniqueConstraint
+from sqlalchemy import Integer, String, Enum, Numeric, UniqueConstraint, ARRAY
 from sqlalchemy.orm import Mapped, mapped_column
 from app.db.enums import Provider, AnimeStatus, AnimeType
 from decimal import Decimal
@@ -20,3 +20,4 @@ class Anime(Base):
     status: Mapped[AnimeStatus | None] = mapped_column(Enum(AnimeStatus, name="anime_status_enum"), nullable=True)
     episode_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
     start_year: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    tags: Mapped[list[str]] = mapped_column(ARRAY(String), nullable=False, default=list)

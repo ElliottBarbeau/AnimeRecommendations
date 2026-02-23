@@ -1,5 +1,5 @@
 from app.db.base import Base
-from sqlalchemy import Integer, Enum, Numeric, Float, ForeignKey, UniqueConstraint, ARRAY, String
+from sqlalchemy import Integer, Enum, Numeric, Float, ForeignKey, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 from app.db.enums import EntryStatus
 from decimal import Decimal
@@ -18,4 +18,3 @@ class UserAnimeEntry(Base):
     score: Mapped[Decimal | None] = mapped_column(Numeric(4, 2), nullable=True)
     z_score: Mapped[float | None] = mapped_column(Float, nullable=True)
     progress: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    tags: Mapped[list[str]] = mapped_column(ARRAY(String), nullable=False, default=list)

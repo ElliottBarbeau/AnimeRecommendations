@@ -1,5 +1,5 @@
 from decimal import Decimal
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 from app.db.enums import Provider, AnimeStatus, AnimeType
 
 class AnimeRead(BaseModel):
@@ -14,6 +14,7 @@ class AnimeRead(BaseModel):
     status: AnimeStatus | None = None
     episode_count: int | None = None
     start_year: int | None = None
+    tags: list[str] = Field(default_factory=list)
 
 class AnimeCreate(BaseModel):
     model_config = ConfigDict(from_attributes=True)
@@ -26,3 +27,4 @@ class AnimeCreate(BaseModel):
     status: AnimeStatus | None = None
     episode_count: int | None = None
     start_year: int | None = None
+    tags: list[str] = Field(default_factory=list)

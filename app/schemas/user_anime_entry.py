@@ -24,4 +24,3 @@ class UserAnimeEntryCreate(BaseModel):
     status: EntryStatus | None = None
     score: int | None = None
     progress: int | None = None
-    tags: list[str] = Field(default_factory=list)
