@@ -6,7 +6,7 @@ from app.db.base import Base
 from app.db.session import engine
 
 # Import models so SQLAlchemy metadata includes all mapped tables.
-from app.db.models import anime, tag_similarity, user, user_anime_entry, user_stats, user_tag_stat  # noqa: F401
+from app.db.models import anime, mal_relation_cache, tag_similarity, user, user_anime_entry, user_stats, user_tag_stat  # noqa: F401
 
 
 def _drop_postgres_enum_types(conn, schema: str) -> int:

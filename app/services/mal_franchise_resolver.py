@@ -73,8 +73,8 @@ class MalFranchiseResolver:
 
         popularity = details.get("provider_popularity_rank")
         members = details.get("provider_member_count")
-        score = details.get("provider_rating")
         year = details.get("start_year")
+        mal_id = details.get("provider_anime_id")
 
         type_rank_map = {
             "tv": 6,
@@ -85,6 +85,14 @@ class MalFranchiseResolver:
             "music": 0,
         }
         type_rank = type_rank_map.get(anime_type, 0)
+
+        # Prefer earlier entries in a franchise chain so sequels collapse to the
+        # franchise starting point (e.g. season 3 -> season 1) when relation
+        # links are available.
+        if isinstance(year, int) and year > 1900:
+            year_rank = -year
+        else:
+            year_rank = -10**9
 
         # Lower MAL popularity rank is better, so invert it.
         if isinstance(popularity, int) and popularity > 0:
@@ -97,15 +105,7 @@ class MalFranchiseResolver:
         else:
             members_rank = -1
 
-        if isinstance(score, (int, float)):
-            score_rank = int(float(score) * 100)
-        else:
-            score_rank = -1
+        # Final deterministic tiebreaker: prefer lower MAL id (typically older entry).
+        mal_id_rank = -mal_id if isinstance(mal_id, int) and mal_id > 0 else -10**9
 
-        # Prefer earlier entries when other signals are similar.
-        if isinstance(year, int) and year > 1900:
-            year_rank = -year
-        else:
-            year_rank = -10**9
-
-        return (type_rank, popularity_rank, members_rank, score_rank, year_rank)
+        return (type_rank, year_rank, popularity_rank, members_rank, mal_id_rank)

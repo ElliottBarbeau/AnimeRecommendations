@@ -20,6 +20,7 @@ class Anime(Base):
     provider_rating: Mapped[Decimal | None] = mapped_column(Numeric(4, 2), nullable=True)
     provider_popularity_rank: Mapped[int | None] = mapped_column(Integer, nullable=True)
     provider_member_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    franchise_root_mal_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     anime_type: Mapped[AnimeType | None] = mapped_column(Enum(AnimeType, name="anime_type_enum"), nullable=True)
     status: Mapped[AnimeStatus | None] = mapped_column(Enum(AnimeStatus, name="anime_status_enum"), nullable=True)
     episode_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
