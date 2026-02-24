@@ -148,6 +148,16 @@ def main() -> None:
                     "provider": Provider.MAL,
                     "provider_anime_id": mal_id,
                     "provider_rating": Decimal(str(score)),
+                    "provider_popularity_rank": (
+                        item.get("popularity")
+                        if isinstance(item.get("popularity"), int) and item.get("popularity") > 0
+                        else None
+                    ),
+                    "provider_member_count": (
+                        item.get("members")
+                        if isinstance(item.get("members"), int) and item.get("members") > 0
+                        else None
+                    ),
                     "anime_type": map_anime_type(item.get("type")),
                     "status": map_anime_status(item.get("status")),
                     "episode_count": episodes,

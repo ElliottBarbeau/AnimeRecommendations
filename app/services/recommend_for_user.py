@@ -8,8 +8,12 @@ from app.db.repositories.user_anime_entries import (
 )
 from app.db.repositories.anime import (
     get_anime_metadata_by_ids,
+    get_anime_metadata_by_mal_ids,
+    get_mal_franchise_nodes_by_mal_ids,
 )
+from app.db.enums import Provider
 from app.db.repositories.tag_similarity import get_similarity_scores_for_tag_pairs
+from app.services.mal_franchise_resolver import MalFranchiseResolver
 
 # discovery tuning
 RELATED_TAG_SIMILARITY_THRESHOLD = 0.20
@@ -17,6 +21,7 @@ RELATED_DISCOVERY_MAX_BONUS = 0.15
 RELATED_DISCOVERY_STRENGTH = 0.25
 MIN_CONFIDENT_TAG_COUNT = 2
 MIN_CANDIDATE_SUPPORT_COUNT = 10
+OUTPUT_RESOLUTION_POOL_SIZE = 120
 
 def z_bucket(z: float | None) -> float:
     match z:
@@ -32,7 +37,65 @@ def z_bucket(z: float | None) -> float:
             return 0.9
         case _:
             return 0.75
-        
+
+
+def _collapse_output_to_franchise_entrypoints(db, ranked_candidates, anime_metadata_by_id):
+    resolver = MalFranchiseResolver(lambda mal_ids: get_mal_franchise_nodes_by_mal_ids(db, mal_ids))
+    aggregated_scores = Counter()
+    display_meta_by_id: dict[int, dict] = {}
+    needed_root_mal_ids: set[int] = set()
+    candidate_root_mal_id_by_local_id: dict[int, int] = {}
+
+    for anime_id, _score in ranked_candidates:
+        anime_meta = anime_metadata_by_id.get(anime_id)
+        if anime_meta is None:
+            continue
+
+        provider = anime_meta.get("provider")
+        mal_id = anime_meta.get("provider_anime_id")
+        if provider != Provider.MAL or not isinstance(mal_id, int):
+            candidate_root_mal_id_by_local_id[anime_id] = -1
+            continue
+
+        resolved_mal_id = resolver.resolve_entrypoint(mal_id)
+        candidate_root_mal_id_by_local_id[anime_id] = resolved_mal_id
+        if resolved_mal_id != mal_id:
+            needed_root_mal_ids.add(resolved_mal_id)
+
+    root_meta_by_mal_id = get_anime_metadata_by_mal_ids(db, list(needed_root_mal_ids))
+
+    for anime_id, score in ranked_candidates:
+        anime_meta = anime_metadata_by_id.get(anime_id)
+        if anime_meta is None:
+            continue
+
+        resolved_mal_id = candidate_root_mal_id_by_local_id.get(anime_id)
+        resolved_root_meta = (
+            root_meta_by_mal_id.get(resolved_mal_id)
+            if isinstance(resolved_mal_id, int) and resolved_mal_id > 0
+            else None
+        )
+
+        if resolved_root_meta is not None and isinstance(resolved_root_meta.get("id"), int):
+            canonical_id = resolved_root_meta["id"]
+            canonical_meta = {
+                "title": resolved_root_meta.get("title"),
+                "tags": resolved_root_meta.get("tags") or [],
+                "provider": resolved_root_meta.get("provider"),
+                "provider_anime_id": resolved_root_meta.get("provider_anime_id"),
+                "anime_type": resolved_root_meta.get("anime_type"),
+                "provider_rating": resolved_root_meta.get("provider_rating"),
+                "start_year": resolved_root_meta.get("start_year"),
+            }
+        else:
+            canonical_id = anime_id
+            canonical_meta = anime_meta
+
+        aggregated_scores[canonical_id] += score
+        display_meta_by_id.setdefault(canonical_id, canonical_meta)
+
+    return aggregated_scores, display_meta_by_id
+
 
 def recommend_for_user(user_id, z_score):
     # changed score instances to z-score, which is normalized score to get better data
@@ -138,9 +201,15 @@ def recommend_for_user(user_id, z_score):
             base_score *= genre_multiplier
             score_dict[id] = base_score
 
-        top_30 = score_dict.most_common(30)
+        ranked_pool = score_dict.most_common(OUTPUT_RESOLUTION_POOL_SIZE)
+        display_scores, display_metadata_by_id = _collapse_output_to_franchise_entrypoints(
+            db,
+            ranked_pool,
+            anime_metadata_by_id,
+        )
+        top_30 = display_scores.most_common(30)
         for id, score in top_30:
-            title = anime_metadata_by_id.get(id, {}).get("title", f"Anime {id}")
+            title = display_metadata_by_id.get(id, {}).get("title", f"Anime {id}")
             print(f"{title}: {round(score, 2)}")
 
     finally:

@@ -251,21 +251,75 @@ def _extract_tags_from_mal_item(item: dict) -> list[str]:
 
     return _normalize_tags(collected)
 
-def _fetch_jikan_anime_tags(provider_anime_id: int) -> list[str]:
+def _extract_prequel_sequel_mal_ids_from_relations_payload(payload: object) -> list[int]:
+    if not isinstance(payload, list):
+        return []
+
+    related_ids: set[int] = set()
+    for relation in payload:
+        if not isinstance(relation, dict):
+            continue
+        relation_name = str(relation.get("relation", "")).strip().lower()
+        if relation_name not in {"prequel", "sequel"}:
+            continue
+
+        entries = relation.get("entry")
+        if not isinstance(entries, list):
+            continue
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            if str(entry.get("type", "")).strip().lower() != "anime":
+                continue
+            mal_id = entry.get("mal_id")
+            if isinstance(mal_id, int):
+                related_ids.add(mal_id)
+
+    return sorted(related_ids)
+
+
+def _fetch_jikan_anime_enrichment(provider_anime_id: int) -> dict[str, object]:
     details = _fetch_json(f"https://api.jikan.moe/v4/anime/{provider_anime_id}")
     if not isinstance(details, dict):
-        return []
+        return {
+            "tags": [],
+            "provider_popularity_rank": None,
+            "provider_member_count": None,
+            "related_prequel_sequel_mal_ids": [],
+        }
 
     data = details.get("data")
     if not isinstance(data, dict):
-        return []
+        return {
+            "tags": [],
+            "provider_popularity_rank": None,
+            "provider_member_count": None,
+            "related_prequel_sequel_mal_ids": [],
+        }
 
     tags: list[str] = []
     tags.extend(_extract_tag_names(data.get("genres")))
     tags.extend(_extract_tag_names(data.get("themes")))
     tags.extend(_extract_tag_names(data.get("demographics")))
     tags.extend(_extract_tag_names(data.get("explicit_genres")))
-    return _normalize_tags(tags)
+    popularity = data.get("popularity")
+    popularity_rank = popularity if isinstance(popularity, int) and popularity > 0 else None
+
+    members = data.get("members")
+    member_count = members if isinstance(members, int) and members > 0 else None
+
+    relation_ids = _extract_prequel_sequel_mal_ids_from_relations_payload(data.get("relations"))
+    if not relation_ids:
+        relations_payload = _fetch_json(f"https://api.jikan.moe/v4/anime/{provider_anime_id}/relations")
+        if isinstance(relations_payload, dict):
+            relation_ids = _extract_prequel_sequel_mal_ids_from_relations_payload(relations_payload.get("data"))
+
+    return {
+        "tags": _normalize_tags(tags),
+        "provider_popularity_rank": popularity_rank,
+        "provider_member_count": member_count,
+        "related_prequel_sequel_mal_ids": relation_ids,
+    }
 
 @router.get("/by-id/{id}", response_model=UserRead)
 def get_user(id: int, db: Session=Depends(get_db)):
@@ -335,7 +389,7 @@ def import_mal_list(payload: UserImportMALRequest, db: Session=Depends(get_db)):
     anime_updated = 0
     entries_created = 0
     entries_updated = 0
-    anime_tags_cache: dict[int, list[str]] = {}
+    anime_enrichment_cache: dict[int, dict[str, object]] = {}
 
     offset = 0
     while True:
@@ -375,24 +429,50 @@ def import_mal_list(payload: UserImportMALRequest, db: Session=Depends(get_db)):
             anime_updates = {
                 "title": title,
                 "provider_rating": rating_decimal,
+                "provider_popularity_rank": (anime.provider_popularity_rank if anime is not None else None),
+                "provider_member_count": (anime.provider_member_count if anime is not None else None),
                 "anime_type": _map_anime_type(item.get("anime_media_type_string")),
                 "status": _map_anime_status(item.get("anime_airing_status")),
                 "episode_count": episode_count,
                 "start_year": _extract_year(item.get("anime_start_date_string")),
+                "related_prequel_sequel_mal_ids": (
+                    list(anime.related_prequel_sequel_mal_ids or []) if anime is not None else []
+                ),
             }
 
             anime_tags = _extract_tags_from_mal_item(item)
             if not anime_tags and anime is not None and anime.tags:
                 anime_tags = anime.tags
-            if not anime_tags:
-                cached_tags = anime_tags_cache.get(provider_anime_id)
-                if cached_tags is None:
+            needs_enrichment = (
+                not anime_tags
+                or anime_updates["provider_popularity_rank"] is None
+                or anime_updates["provider_member_count"] is None
+                or not anime_updates["related_prequel_sequel_mal_ids"]
+            )
+            if needs_enrichment:
+                enrichment = anime_enrichment_cache.get(provider_anime_id)
+                if enrichment is None:
                     try:
-                        cached_tags = _fetch_jikan_anime_tags(provider_anime_id)
+                        enrichment = _fetch_jikan_anime_enrichment(provider_anime_id)
                     except HTTPException:
-                        cached_tags = []
-                    anime_tags_cache[provider_anime_id] = cached_tags
-                anime_tags = cached_tags
+                        enrichment = {
+                            "tags": [],
+                            "provider_popularity_rank": None,
+                            "provider_member_count": None,
+                            "related_prequel_sequel_mal_ids": [],
+                        }
+                    anime_enrichment_cache[provider_anime_id] = enrichment
+
+                if not anime_tags:
+                    anime_tags = list(enrichment.get("tags") or [])
+                if anime_updates["provider_popularity_rank"] is None:
+                    anime_updates["provider_popularity_rank"] = enrichment.get("provider_popularity_rank")
+                if anime_updates["provider_member_count"] is None:
+                    anime_updates["provider_member_count"] = enrichment.get("provider_member_count")
+                if not anime_updates["related_prequel_sequel_mal_ids"]:
+                    anime_updates["related_prequel_sequel_mal_ids"] = list(
+                        enrichment.get("related_prequel_sequel_mal_ids") or []
+                    )
             anime_updates["tags"] = anime_tags
 
             if anime is None:
