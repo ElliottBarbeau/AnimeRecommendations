@@ -9,6 +9,7 @@ from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 from urllib.error import HTTPError, URLError
 import json
+import os
 import re
 import time
 from app.api.deps import get_db
@@ -28,6 +29,47 @@ _JIKAN_MIN_INTERVAL_SECONDS = 0.7
 _JIKAN_RETRY_BASE_SECONDS = 1.5
 _JIKAN_MAX_RETRIES = 5
 _last_jikan_request_at = 0.0
+
+
+def _mal_import_debug_enabled() -> bool:
+    value = os.getenv("MAL_IMPORT_DEBUG", "")
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _mal_import_debug(message: str) -> None:
+    if not _mal_import_debug_enabled():
+        return
+    ts = time.strftime("%Y-%m-%d %H:%M:%S")
+    print(f"[{ts}] [import_mal_list] {message}", flush=True)
+
+
+def _mal_import_enrichment_mode() -> str:
+    value = os.getenv("MAL_IMPORT_ENRICHMENT_MODE", "full").strip().lower()
+    if value in {"none", "off", "0", "false"}:
+        return "none"
+    if value in {"relations", "relation", "relations_only"}:
+        return "relations"
+    return "full"
+
+
+def _mal_import_enrichment_min_rating() -> float | None:
+    raw = os.getenv("MAL_IMPORT_ENRICHMENT_MIN_RATING", "").strip()
+    if not raw:
+        return None
+    try:
+        value = float(raw)
+    except ValueError:
+        return None
+    return value if value > 0 else None
+
+
+def _as_float_rating(value: object) -> float | None:
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
 
 def _is_jikan_url(url: str) -> bool:
     return urlparse(url).netloc.lower() == "api.jikan.moe"
@@ -71,18 +113,27 @@ def _fetch_json(url: str) -> object:
     attempts = 0
 
     while True:
+        started = time.perf_counter()
         req = Request(url, headers={"User-Agent": "AnimeRecommendations/1.0"})
         if is_jikan:
             _throttle_jikan_requests()
 
         try:
+            _mal_import_debug(f"HTTP GET start url={url} attempt={attempts + 1}")
             with urlopen(req, timeout=20) as response:
                 if is_jikan:
                     _mark_jikan_request_complete()
-                return json.loads(response.read().decode("utf-8"))
+                payload = json.loads(response.read().decode("utf-8"))
+                elapsed = time.perf_counter() - started
+                _mal_import_debug(f"HTTP GET ok url={url} attempt={attempts + 1} elapsed={elapsed:.2f}s")
+                return payload
         except HTTPError as exc:
             if is_jikan:
                 _mark_jikan_request_complete()
+            elapsed = time.perf_counter() - started
+            _mal_import_debug(
+                f"HTTP GET http_error url={url} code={exc.code} attempt={attempts + 1} elapsed={elapsed:.2f}s"
+            )
 
             body = ""
             try:
@@ -104,6 +155,9 @@ def _fetch_json(url: str) -> object:
             if is_jikan and exc.code == 429 and attempts < _JIKAN_MAX_RETRIES:
                 retry_after = _retry_after_seconds(exc)
                 backoff = max(retry_after, _JIKAN_RETRY_BASE_SECONDS * (2 ** attempts))
+                _mal_import_debug(
+                    f"HTTP GET retrying url={url} reason=429 backoff={backoff:.2f}s next_attempt={attempts + 2}"
+                )
                 time.sleep(backoff)
                 attempts += 1
                 continue
@@ -113,13 +167,23 @@ def _fetch_json(url: str) -> object:
             if exc.code == 429:
                 raise HTTPException(status_code=429, detail=message or "Jikan rate limit exceeded. Try again shortly.")
             raise HTTPException(status_code=502, detail=message or f"Upstream request failed: HTTP {exc.code}")
-        except URLError:
+        except URLError as exc:
+            elapsed = time.perf_counter() - started
+            _mal_import_debug(
+                f"HTTP GET url_error url={url} attempt={attempts + 1} elapsed={elapsed:.2f}s error={exc}"
+            )
             if is_jikan and attempts < _JIKAN_MAX_RETRIES:
-                time.sleep(_JIKAN_RETRY_BASE_SECONDS * (2 ** attempts))
+                backoff = _JIKAN_RETRY_BASE_SECONDS * (2 ** attempts)
+                _mal_import_debug(
+                    f"HTTP GET retrying url={url} reason=url_error backoff={backoff:.2f}s next_attempt={attempts + 2}"
+                )
+                time.sleep(backoff)
                 attempts += 1
                 continue
             raise HTTPException(status_code=502, detail="Could not reach MAL/Jikan upstream")
         except json.JSONDecodeError:
+            elapsed = time.perf_counter() - started
+            _mal_import_debug(f"HTTP GET invalid_json url={url} attempt={attempts + 1} elapsed={elapsed:.2f}s")
             raise HTTPException(status_code=502, detail="Invalid JSON from MAL/Jikan upstream")
 
 def _extract_mal_id_from_profile(profile_data: object) -> int | None:
@@ -361,7 +425,17 @@ def create_user(payload: UserCreate, db: Session=Depends(get_db)):
 @router.post("/import/mal", response_model=UserImportMALResponse)
 def import_mal_list(payload: UserImportMALRequest, db: Session=Depends(get_db)):
     username = _parse_mal_username(payload.mal_list_url)
+    import_started = time.perf_counter()
+    enrichment_mode = _mal_import_enrichment_mode()
+    enrichment_min_rating = _mal_import_enrichment_min_rating()
+    _mal_import_debug(f"START username={username}")
+    _mal_import_debug(f"Enrichment mode username={username} mode={enrichment_mode}")
+    _mal_import_debug(
+        f"Enrichment min rating username={username} min_rating={enrichment_min_rating}"
+    )
+    _mal_import_debug(f"Fetching provider user id for username={username}")
     provider_user_id = _fetch_provider_user_id(username)
+    _mal_import_debug(f"Resolved provider user id username={username} provider_user_id={provider_user_id}")
 
     user = db.execute(
         select(User).where(User.provider == Provider.MAL, User.provider_username == username)
@@ -393,6 +467,8 @@ def import_mal_list(payload: UserImportMALRequest, db: Session=Depends(get_db)):
 
     offset = 0
     while True:
+        page_started = time.perf_counter()
+        _mal_import_debug(f"Fetching MAL list page username={username} offset={offset}")
         list_data = _fetch_json(
             f"https://myanimelist.net/animelist/{username}/load.json?offset={offset}&status=7"
         )
@@ -400,12 +476,18 @@ def import_mal_list(payload: UserImportMALRequest, db: Session=Depends(get_db)):
             raise HTTPException(status_code=502, detail="Unexpected MAL list response shape")
 
         if not list_data:
+            _mal_import_debug(f"No more MAL list items username={username} offset={offset}; stopping pagination")
             break
 
         pages_fetched += 1
         items_seen += len(list_data)
+        page_elapsed = time.perf_counter() - page_started
+        _mal_import_debug(
+            f"Fetched page username={username} page={pages_fetched} offset={offset} "
+            f"items={len(list_data)} items_seen={items_seen} elapsed={page_elapsed:.2f}s"
+        )
 
-        for item in list_data:
+        for item_index, item in enumerate(list_data, start=1):
             if not isinstance(item, dict):
                 continue
 
@@ -443,18 +525,46 @@ def import_mal_list(payload: UserImportMALRequest, db: Session=Depends(get_db)):
             anime_tags = _extract_tags_from_mal_item(item)
             if not anime_tags and anime is not None and anime.tags:
                 anime_tags = anime.tags
-            needs_enrichment = (
-                not anime_tags
-                or anime_updates["provider_popularity_rank"] is None
-                or anime_updates["provider_member_count"] is None
-                or not anime_updates["related_prequel_sequel_mal_ids"]
+            if enrichment_mode == "none":
+                needs_enrichment = False
+            elif enrichment_mode == "relations":
+                needs_enrichment = not anime_updates["related_prequel_sequel_mal_ids"]
+            else:
+                needs_enrichment = (
+                    not anime_tags
+                    or anime_updates["provider_popularity_rank"] is None
+                    or anime_updates["provider_member_count"] is None
+                    or not anime_updates["related_prequel_sequel_mal_ids"]
+                )
+            item_provider_rating = _as_float_rating(anime_updates["provider_rating"])
+            skip_enrichment_for_rating = (
+                enrichment_min_rating is not None
+                and item_provider_rating is not None
+                and item_provider_rating <= enrichment_min_rating
             )
-            if needs_enrichment:
+
+            if skip_enrichment_for_rating and needs_enrichment:
+                _mal_import_debug(
+                    f"Skipping enrichment username={username} anime_id={provider_anime_id} "
+                    f"provider_rating={item_provider_rating:.2f} threshold={enrichment_min_rating:.2f}"
+                )
+
+            if needs_enrichment and not skip_enrichment_for_rating:
                 enrichment = anime_enrichment_cache.get(provider_anime_id)
                 if enrichment is None:
                     try:
+                        _mal_import_debug(
+                            f"Enrichment fetch username={username} anime_id={provider_anime_id} "
+                            f"page={pages_fetched} item={item_index}/{len(list_data)}"
+                        )
                         enrichment = _fetch_jikan_anime_enrichment(provider_anime_id)
+                        _mal_import_debug(
+                            f"Enrichment done username={username} anime_id={provider_anime_id}"
+                        )
                     except HTTPException:
+                        _mal_import_debug(
+                            f"Enrichment failed username={username} anime_id={provider_anime_id}; using defaults"
+                        )
                         enrichment = {
                             "tags": [],
                             "provider_popularity_rank": None,
@@ -463,11 +573,11 @@ def import_mal_list(payload: UserImportMALRequest, db: Session=Depends(get_db)):
                         }
                     anime_enrichment_cache[provider_anime_id] = enrichment
 
-                if not anime_tags:
+                if enrichment_mode == "full" and not anime_tags:
                     anime_tags = list(enrichment.get("tags") or [])
-                if anime_updates["provider_popularity_rank"] is None:
+                if enrichment_mode == "full" and anime_updates["provider_popularity_rank"] is None:
                     anime_updates["provider_popularity_rank"] = enrichment.get("provider_popularity_rank")
-                if anime_updates["provider_member_count"] is None:
+                if enrichment_mode == "full" and anime_updates["provider_member_count"] is None:
                     anime_updates["provider_member_count"] = enrichment.get("provider_member_count")
                 if not anime_updates["related_prequel_sequel_mal_ids"]:
                     anime_updates["related_prequel_sequel_mal_ids"] = list(
@@ -519,8 +629,15 @@ def import_mal_list(payload: UserImportMALRequest, db: Session=Depends(get_db)):
                 if changed:
                     entries_updated += 1
 
+            if item_index % 50 == 0:
+                _mal_import_debug(
+                    f"Processed page progress username={username} page={pages_fetched} "
+                    f"item={item_index}/{len(list_data)}"
+                )
+
         offset += _MAL_LOAD_PAGE_SIZE
 
+    _mal_import_debug(f"Computing score stats username={username}")
     user_scores = db.execute(
         select(UserAnimeEntry.score).where(
             UserAnimeEntry.user_id == user.id,
@@ -576,6 +693,9 @@ def import_mal_list(payload: UserImportMALRequest, db: Session=Depends(get_db)):
         .join(Anime, Anime.id == UserAnimeEntry.anime_id)
         .where(UserAnimeEntry.user_id == user.id)
     ).all()
+    _mal_import_debug(
+        f"Building tag stats username={username} user_entries={len(user_entries)} joined_entries={len(user_entries_with_anime)}"
+    )
     for user_entry, anime in user_entries_with_anime:
         for tag in _normalize_tags(anime.tags or []):
             tag_counts[tag] += 1
@@ -598,9 +718,17 @@ def import_mal_list(payload: UserImportMALRequest, db: Session=Depends(get_db)):
         )
 
     try:
+        _mal_import_debug(
+            f"Commit start username={username} pages={pages_fetched} items_seen={items_seen} "
+            f"anime_created={anime_created} anime_updated={anime_updated} "
+            f"entries_created={entries_created} entries_updated={entries_updated}"
+        )
         db.commit()
+        total_elapsed = time.perf_counter() - import_started
+        _mal_import_debug(f"COMMIT ok username={username} total_elapsed={total_elapsed:.2f}s")
     except IntegrityError:
         db.rollback()
+        _mal_import_debug(f"COMMIT failed username={username} reason=IntegrityError")
         raise HTTPException(status_code=409, detail="Import failed due to conflicting data")
 
     return UserImportMALResponse(
