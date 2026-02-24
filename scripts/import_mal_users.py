@@ -1,10 +1,15 @@
 import argparse
+from collections import Counter
+from itertools import combinations
 import os
 import time
 
 from fastapi import HTTPException
+from sqlalchemy import delete, select
 
 from app.api.v1.routes.user import import_mal_list
+from app.db.models.anime import Anime
+from app.db.models.tag_similarity import TagSimilarity
 from app.db.session import SessionLocal
 from app.schemas.user import UserImportMALRequest
 
@@ -35,6 +40,93 @@ def parse_usernames(args: argparse.Namespace) -> list[str]:
     return deduped
 
 
+def _normalize_tag_list(raw_tags: object) -> list[str]:
+    if not isinstance(raw_tags, list):
+        return []
+
+    seen: set[str] = set()
+    cleaned_tags: list[str] = []
+    for value in raw_tags:
+        if not isinstance(value, str):
+            continue
+        cleaned = value.strip()
+        if not cleaned:
+            continue
+        key = cleaned.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        cleaned_tags.append(cleaned)
+    return cleaned_tags
+
+
+def rebuild_tag_similarity() -> None:
+    started = time.perf_counter()
+    log("Rebuilding tag_similarity from anime tags...")
+
+    db = SessionLocal()
+    try:
+        anime_tag_rows = db.execute(select(Anime.tags)).scalars().all()
+        tag_counts: Counter[str] = Counter()
+        pair_counts: Counter[tuple[str, str]] = Counter()
+        anime_with_tags = 0
+
+        for raw_tags in anime_tag_rows:
+            tags = sorted(_normalize_tag_list(raw_tags))
+            if len(tags) < 1:
+                continue
+
+            anime_with_tags += 1
+            tag_counts.update(tags)
+
+            if len(tags) < 2:
+                continue
+
+            for left_tag, right_tag in combinations(tags, 2):
+                pair_counts[(left_tag, right_tag)] += 1
+
+        payload_rows: list[dict[str, object]] = []
+        for (left_tag, right_tag), cooccurrence_count in pair_counts.items():
+            denom = tag_counts[left_tag] + tag_counts[right_tag] - cooccurrence_count
+            if denom <= 0:
+                continue
+            jaccard_score = cooccurrence_count / denom
+            payload_rows.append(
+                {
+                    "source_tag": left_tag,
+                    "related_tag": right_tag,
+                    "cooccurrence_count": cooccurrence_count,
+                    "jaccard_score": float(jaccard_score),
+                }
+            )
+            payload_rows.append(
+                {
+                    "source_tag": right_tag,
+                    "related_tag": left_tag,
+                    "cooccurrence_count": cooccurrence_count,
+                    "jaccard_score": float(jaccard_score),
+                }
+            )
+
+        db.execute(delete(TagSimilarity))
+        if payload_rows:
+            db.execute(TagSimilarity.__table__.insert(), payload_rows)
+        db.commit()
+
+        elapsed = time.perf_counter() - started
+        log(
+            "Rebuilt tag_similarity "
+            f"(anime_rows={len(anime_tag_rows)}, anime_with_tags={anime_with_tags}, "
+            f"unique_tags={len(tag_counts)}, undirected_pairs={len(pair_counts)}, "
+            f"stored_rows={len(payload_rows)}, elapsed={elapsed:.2f}s)"
+        )
+    except Exception:
+        db.rollback()
+        raise
+    finally:
+        db.close()
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="Bulk import MAL users using the existing /users/import/mal route logic."
@@ -63,6 +155,11 @@ def main() -> None:
         type=float,
         default=None,
         help="Skip per-anime enrichment when MAL provider rating is <= this value (e.g. 7.5).",
+    )
+    parser.add_argument(
+        "--skip-tag-similarity-refresh",
+        action="store_true",
+        help="Skip rebuilding tag_similarity after the import batch finishes.",
     )
     args = parser.parse_args()
 
@@ -125,6 +222,9 @@ def main() -> None:
 
     total_elapsed = time.perf_counter() - batch_started
     log(f"Done. total={total} ok={ok} failed={failed} elapsed={total_elapsed:.2f}s")
+
+    if not args.skip_tag_similarity_refresh:
+        rebuild_tag_similarity()
 
     if args.enrichment_mode:
         if previous_enrichment_mode is None:

@@ -6,7 +6,30 @@ from app.db.base import Base
 from app.db.session import engine
 
 # Import models so SQLAlchemy metadata includes all mapped tables.
-from app.db.models import anime, user, user_anime_entry, user_stats, user_tag_stat  # noqa: F401
+from app.db.models import anime, tag_similarity, user, user_anime_entry, user_stats, user_tag_stat  # noqa: F401
+
+
+def _drop_postgres_enum_types(conn, schema: str) -> int:
+    if conn.dialect.name != "postgresql":
+        return 0
+
+    enum_names = conn.execute(
+        text(
+            """
+            SELECT t.typname
+            FROM pg_type t
+            JOIN pg_namespace n ON n.oid = t.typnamespace
+            WHERE t.typtype = 'e' AND n.nspname = :schema
+            ORDER BY t.typname
+            """
+        ),
+        {"schema": schema},
+    ).scalars().all()
+
+    for enum_name in enum_names:
+        conn.execute(text(f'DROP TYPE IF EXISTS "{schema}"."{enum_name}" CASCADE'))
+
+    return len(enum_names)
 
 
 def main() -> None:
@@ -43,6 +66,10 @@ def main() -> None:
             for table_name in table_names:
                 conn.execute(text(f'DROP TABLE IF EXISTS "{schema}"."{table_name}" CASCADE'))
             print(f"Dropped {len(table_names)} table(s) from schema '{schema}'.")
+
+        dropped_enums = _drop_postgres_enum_types(conn, schema)
+        if dropped_enums:
+            print(f"Dropped {dropped_enums} PostgreSQL enum type(s) from schema '{schema}'.")
 
     if args.recreate:
         Base.metadata.create_all(bind=engine)
