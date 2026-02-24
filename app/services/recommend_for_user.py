@@ -14,6 +14,7 @@ from app.db.repositories.anime import (
 from app.db.enums import Provider
 from app.db.repositories.tag_similarity import get_similarity_scores_for_tag_pairs
 from app.services.mal_franchise_resolver import MalFranchiseResolver
+from app.schemas.recommendations import RecommendationItem
 
 # discovery tuning
 RELATED_TAG_SIMILARITY_THRESHOLD = 0.20
@@ -23,7 +24,7 @@ MIN_CONFIDENT_TAG_COUNT = 2
 MIN_CANDIDATE_SUPPORT_COUNT = 10
 OUTPUT_RESOLUTION_POOL_SIZE = 120
 
-def z_bucket(z: float | None) -> float:
+def _z_bucket(z: float | None) -> float:
     match z:
         case None:
             return 1
@@ -97,124 +98,104 @@ def _collapse_output_to_franchise_entrypoints(db, ranked_candidates, anime_metad
     return aggregated_scores, display_meta_by_id
 
 
-def recommend_for_user(user_id, z_score):
-    # changed score instances to z-score, which is normalized score to get better data
-    # target user's z_score >= 1.0 shows
-    # neighbour users who also gave those shows z_score >= 1.0
-    # candidate shows are the ones that neighbours scored z_score >= 1.0
-    # exclude shows target user already has in their list
-    # simple scoring for now, just +1
-
-    # +1 every time a neighbour has z_score >= 1.0
-    # sort by descending score
-
-
-    # cap how much one neighbour can contribute?
-    # minimum 2 supporting neighbours for a candidate
-    # some things to consider
-    # 1. adding tags
-    # -> if someone doesn't watch shounen, they prob don't want to watch CSM Reze arc, even though its very high rated
-    # -> people with heavy psychological pref would probably like to stick to that genre (for example)
-
-    db = SessionLocal()
-    try:
-        user_shows = get_entries_above_z_score(db, user_id, z_score)
-        neighbours = get_neighbours(db, user_shows, user_id, z_score)
-        candidate_shows = get_candidate_shows(db, neighbours, user_id, z_score)
-        score_dict = Counter(
-            {
-                row["anime_id"]: row["base_score"]
-                for row in candidate_shows
-                if row["support_count"] >= MIN_CANDIDATE_SUPPORT_COUNT
-            }
-        )
-        user_tag_prefs = get_user_tag_preferences(db, user_id)
-        anime_metadata_by_id = get_anime_metadata_by_ids(db, list(score_dict.keys()))
-        global_liked_tags = [
+def recommend_for_user(db, user_id, z_score=0.25):
+    user_shows = get_entries_above_z_score(db, user_id, z_score)
+    neighbours = get_neighbours(db, user_shows, user_id, z_score)
+    candidate_shows = get_candidate_shows(db, neighbours, user_id, z_score)
+    score_dict = Counter(
+        {
+            row["anime_id"]: row["base_score"]
+            for row in candidate_shows
+            if row["support_count"] >= MIN_CANDIDATE_SUPPORT_COUNT
+        }
+    )
+    user_tag_prefs = get_user_tag_preferences(db, user_id)
+    anime_metadata_by_id = get_anime_metadata_by_ids(db, list(score_dict.keys()))
+    global_liked_tags = [
+        tag
+        for tag, pref in user_tag_prefs.items()
+        if pref["avg_z_score"] is not None
+        and pref["z_score_count"] >= MIN_CONFIDENT_TAG_COUNT
+        and float(pref["avg_z_score"]) >= 0.2
+    ]
+    all_unknown_candidate_tags = sorted(
+        {
             tag
-            for tag, pref in user_tag_prefs.items()
-            if pref["avg_z_score"] is not None
-            and pref["z_score_count"] >= MIN_CONFIDENT_TAG_COUNT
-            and float(pref["avg_z_score"]) >= 0.2
-        ]
-        all_unknown_candidate_tags = sorted(
-            {
-                tag
-                for anime_meta in anime_metadata_by_id.values()
-                for tag in (anime_meta.get("tags") or [])
-                if tag not in user_tag_prefs
-            }
-        )
-        similarity_scores_by_pair = get_similarity_scores_for_tag_pairs(
-            db,
-            global_liked_tags,
-            all_unknown_candidate_tags,
-            min_cooccurrence_count=2,
-        )
+            for anime_meta in anime_metadata_by_id.values()
+            for tag in (anime_meta.get("tags") or [])
+            if tag not in user_tag_prefs
+        }
+    )
+    similarity_scores_by_pair = get_similarity_scores_for_tag_pairs(
+        db,
+        global_liked_tags,
+        all_unknown_candidate_tags,
+        min_cooccurrence_count=2,
+    )
 
-        for id in list(score_dict.keys()):
-            anime_meta = anime_metadata_by_id.get(id)
-            if anime_meta is None:
+    for id in list(score_dict.keys()):
+        anime_meta = anime_metadata_by_id.get(id)
+        if anime_meta is None:
+            continue
+
+        base_score = score_dict[id] * 0.55
+        tags = anime_meta["tags"]
+        known_scores: list[float] = []
+        liked_known_tags: list[str] = []
+        unknown_tags: list[str] = []
+        has_strong_disliked_tag = False
+
+        for tag in tags:
+            pref = user_tag_prefs.get(tag)
+            if pref is None or pref["avg_z_score"] is None:
+                unknown_tags.append(tag)
                 continue
 
-            base_score = score_dict[id] * 0.55
-            tags = anime_meta["tags"]
-            known_scores: list[float] = []
-            liked_known_tags: list[str] = []
-            unknown_tags: list[str] = []
-            has_strong_disliked_tag = False
+            avg_z = float(pref["avg_z_score"])
+            known_scores.append(avg_z)
 
-            for tag in tags:
-                pref = user_tag_prefs.get(tag)
-                if pref is None or pref["avg_z_score"] is None:
-                    unknown_tags.append(tag)
-                    continue
+            if pref["z_score_count"] >= MIN_CONFIDENT_TAG_COUNT:
+                if avg_z >= 0.2:
+                    liked_known_tags.append(tag)
+                if avg_z <= -0.5:
+                    has_strong_disliked_tag = True
 
-                avg_z = float(pref["avg_z_score"])
-                known_scores.append(avg_z)
+        avg_tag_score = (sum(known_scores) / len(known_scores)) if known_scores else 0.0
+        genre_multiplier = _z_bucket(avg_tag_score)
 
-                if pref["z_score_count"] >= MIN_CONFIDENT_TAG_COUNT:
-                    if avg_z >= 0.2:
-                        liked_known_tags.append(tag)
-                    if avg_z <= -0.5:
-                        has_strong_disliked_tag = True
-
-            avg_tag_score = (sum(known_scores) / len(known_scores)) if known_scores else 0.0
-            genre_multiplier = z_bucket(avg_tag_score)
-
-            if liked_known_tags and unknown_tags and not has_strong_disliked_tag:
-                best_similarity = max(
-                    (
-                        similarity_scores_by_pair.get((liked_tag, unknown_tag), 0.0)
-                        for liked_tag in liked_known_tags
-                        for unknown_tag in unknown_tags
-                    ),
-                    default=0.0,
+        if liked_known_tags and unknown_tags and not has_strong_disliked_tag:
+            best_similarity = max(
+                (
+                    similarity_scores_by_pair.get((liked_tag, unknown_tag), 0.0)
+                    for liked_tag in liked_known_tags
+                    for unknown_tag in unknown_tags
+                ),
+                default=0.0,
+            )
+            if best_similarity >= RELATED_TAG_SIMILARITY_THRESHOLD:
+                discovery_multiplier = 1.0 + min(
+                    RELATED_DISCOVERY_MAX_BONUS,
+                    best_similarity * RELATED_DISCOVERY_STRENGTH,
                 )
-                if best_similarity >= RELATED_TAG_SIMILARITY_THRESHOLD:
-                    discovery_multiplier = 1.0 + min(
-                        RELATED_DISCOVERY_MAX_BONUS,
-                        best_similarity * RELATED_DISCOVERY_STRENGTH,
-                    )
-                    genre_multiplier *= discovery_multiplier
+                genre_multiplier *= discovery_multiplier
 
-            base_score *= genre_multiplier
-            score_dict[id] = base_score
+        base_score *= genre_multiplier
+        score_dict[id] = base_score
 
-        ranked_pool = score_dict.most_common(OUTPUT_RESOLUTION_POOL_SIZE)
-        display_scores, display_metadata_by_id = _collapse_output_to_franchise_entrypoints(
-            db,
-            ranked_pool,
-            anime_metadata_by_id,
+    ranked_pool = score_dict.most_common(OUTPUT_RESOLUTION_POOL_SIZE)
+    display_scores, display_metadata_by_id = _collapse_output_to_franchise_entrypoints(
+        db,
+        ranked_pool,
+        anime_metadata_by_id,
+    )
+
+    recommendation_items = []
+    top_30 = display_scores.most_common(30)
+    for id, match_score in top_30:
+        item = RecommendationItem(
+            title=display_metadata_by_id.get(id, {}).get("title", f"Anime {id}"),
+            score=match_score
         )
-        top_30 = display_scores.most_common(30)
-        for id, score in top_30:
-            title = display_metadata_by_id.get(id, {}).get("title", f"Anime {id}")
-            print(f"{title}: {round(score, 2)}")
+        recommendation_items.append(item)
 
-    finally:
-        db.close()
-    
-
-if __name__ == "__main__":
-    recommend_for_user(96, 0.35)
+    return recommendation_items
