@@ -439,7 +439,7 @@ def _collapse_output_to_franchise_entrypoints(db, ranked_candidates, anime_metad
 
 def _persist_franchise_root_cache_for_ranked_pool(db, ranked_candidates, anime_metadata_by_id, candidate_root_mal_id_by_local_id) -> bool:
     desired_roots_by_mal_id: dict[int, int] = {}
-    for anime_id, _score in ranked_candidates:
+    for anime_id, _ in ranked_candidates:
         anime_meta = anime_metadata_by_id.get(anime_id)
         if anime_meta is None or anime_meta.get("provider") != Provider.MAL:
             continue
@@ -592,7 +592,7 @@ def recommend_for_user(db, user_id, z_score=0.25):
         any_franchise_cache_updated = any_franchise_cache_updated or franchise_cache_updated
 
         available_count = 0
-        for anime_id, _score in display_scores.most_common(collapse_pool_size):
+        for anime_id, _ in display_scores.most_common(collapse_pool_size):
             if anime_id in user_seen_anime_ids:
                 continue
             available_count += 1
