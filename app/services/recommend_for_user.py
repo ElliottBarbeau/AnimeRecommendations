@@ -467,7 +467,6 @@ def _persist_franchise_root_cache_for_ranked_pool(db, ranked_candidates, anime_m
         if desired_root is None:
             continue
         existing_related = [value for value in (row.related_prequel_sequel_mal_ids or []) if isinstance(value, int)]
-        # Don't persist unresolved self-root placeholders. Those block future backfill.
         if desired_root == row.provider_anime_id and not existing_related:
             continue
         if row.franchise_root_mal_id != desired_root:
