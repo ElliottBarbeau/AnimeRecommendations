@@ -48,7 +48,6 @@ def create_entry(payload: UserAnimeEntryCreate, db: Session=Depends(get_db)):
         ).scalar_one_or_none()
     
     if existing:
-        # eventually change this to update scores if the user has changed their entry since last list parse
         raise HTTPException(status_code=409, detail="User anime entry already exists")
     
     entry = UserAnimeEntry(**payload.model_dump())
